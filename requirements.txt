@@ -1,0 +1,9 @@
+streamlit==1.38.0
+pandas==2.2.2
+numpy==1.26.4
+plotly==5.24.1
+smartapi-python==1.5.5
+pyotp==2.9.0
+python-dotenv==1.0.1
+logzero==1.7.0
+websocket-client==1.8.0

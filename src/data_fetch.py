@@ -16,6 +16,14 @@ INSTRUMENT_MASTER_URL = (
 )
 INSTRUMENT_CACHE_PATH = config.DATA_DIR / "instrument_master.json"
 
+# Where NSE publishes the official Nifty 500 constituent list (symbol + industry).
+# Two URLs tried in order since NSE has migrated domains before.
+NIFTY500_CSV_URLS = [
+    "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
+    "https://archives.nseindia.com/content/indices/ind_nifty500list.csv",
+]
+NIFTY500_CACHE_PATH = config.DATA_DIR / "nifty500_constituents.json"
+
 # Curated list of major NSE sector indices we track for sector rotation.
 # (symbol as it appears in Angel One's instrument master, under exchange NSE)
 SECTOR_INDICES = [
@@ -25,6 +33,11 @@ SECTOR_INDICES = [
     "NIFTY CONSR DURBL", "NIFTY HEALTHCARE",
 ]
 BENCHMARK_INDEX = "NIFTY 50"
+
+# Cache names used for index data (as opposed to individual stocks) - used
+# elsewhere in the app to separate "the market universe" from "the indices
+# that measure it".
+INDEX_CACHE_NAMES = {"NIFTY50"} | set(SECTOR_INDICES)
 
 
 def load_instrument_master(force_refresh: bool = False) -> pd.DataFrame:
@@ -46,6 +59,72 @@ def load_instrument_master(force_refresh: bool = False) -> pd.DataFrame:
     with open(INSTRUMENT_CACHE_PATH, "w") as f:
         json.dump(data, f)
     return pd.DataFrame(data)
+
+
+def fetch_nifty500_constituents(force_refresh: bool = False) -> list:
+    """Downloads (or loads a cached copy of) the official Nifty 500 list from
+    NSE, including each company's Industry classification. Cached for 7 days
+    since the index only rebalances twice a year - no need to refetch daily.
+
+    Returns a list of dicts: [{"symbol": "RELIANCE", "company_name": "...",
+    "industry": "Oil Gas & Consumable Fuels"}, ...]
+
+    Falls back to a stale cached copy if NSE's site is unreachable, and
+    raises only if there's no cache at all to fall back on.
+    """
+    if not force_refresh and NIFTY500_CACHE_PATH.exists():
+        age_days = (time.time() - NIFTY500_CACHE_PATH.stat().st_mtime) / 86400
+        if age_days < 7:
+            with open(NIFTY500_CACHE_PATH) as f:
+                return json.load(f)
+
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+        "Accept": "text/csv,application/csv,*/*",
+    }
+    session = requests.Session()
+    session.headers.update(headers)
+    try:
+        # NSE requires a "real browser" visit first to set session cookies,
+        # or direct CSV requests often get rejected.
+        session.get("https://www.nseindia.com", timeout=10)
+    except Exception:
+        pass
+
+    last_error = None
+    for url in NIFTY500_CSV_URLS:
+        try:
+            resp = session.get(url, timeout=20)
+            resp.raise_for_status()
+            constituents = _parse_nifty500_csv(resp.text)
+            if constituents:
+                with open(NIFTY500_CACHE_PATH, "w") as f:
+                    json.dump(constituents, f)
+                return constituents
+        except Exception as e:
+            last_error = e
+            continue
+
+    if NIFTY500_CACHE_PATH.exists():
+        with open(NIFTY500_CACHE_PATH) as f:
+            return json.load(f)
+    raise RuntimeError(f"Could not fetch the Nifty 500 list from NSE and no cached copy exists: {last_error}")
+
+
+def _parse_nifty500_csv(text: str) -> list:
+    import csv
+    import io
+    reader = csv.DictReader(io.StringIO(text))
+    out = []
+    for row in reader:
+        symbol = (row.get("Symbol") or row.get("SYMBOL") or "").strip()
+        industry = (row.get("Industry") or row.get("INDUSTRY") or "").strip()
+        company = (row.get("Company Name") or row.get("COMPANY NAME") or "").strip()
+        if symbol:
+            out.append({"symbol": symbol, "industry": industry, "company_name": company})
+    return out
+
 
 
 def get_token(instruments: pd.DataFrame, symbol: str, exch_seg: str = "NSE") -> str:

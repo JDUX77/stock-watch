@@ -56,7 +56,8 @@ def trending_stocks(symbols: list, benchmark_symbol: str = "NIFTY50", top_n: int
             "Trending Score": trend_sc,
         })
 
-    result = pd.DataFrame(rows)
+    columns = ["symbol", "Momentum Score", "1W ago", "Change", "Trending Score"]
+    result = pd.DataFrame(rows, columns=columns)
     if not result.empty:
         result = result.sort_values("Trending Score", ascending=False).head(top_n)
     return result

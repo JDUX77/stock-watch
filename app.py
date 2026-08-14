@@ -14,7 +14,8 @@ import streamlit.components.v1 as components
 
 import config
 from src import cache_db, scoring, sector_map
-from src.refresh_job import run_refresh, DEFAULT_WATCHLIST
+from src.refresh_job import run_refresh, FALLBACK_WATCHLIST
+from src.data_fetch import INDEX_CACHE_NAMES
 from src import momentum, breadth, sector_rotation, tradingview_widget
 
 st.set_page_config(page_title="India Market Dashboard", layout="wide")
@@ -52,14 +53,14 @@ def style_status_column(df: pd.DataFrame):
     return display_df.style.apply(highlight, axis=1)
 
 
-watchlist_symbols = [s.replace("-EQ", "") for s in DEFAULT_WATCHLIST]
+fallback_symbols = [s.replace("-EQ", "") for s in FALLBACK_WATCHLIST]
 
 if "nav" not in st.session_state:
     st.session_state.nav = "Market Overview"
 if "selected_sector" not in st.session_state:
     st.session_state.selected_sector = None
 if "selected_stock" not in st.session_state:
-    st.session_state.selected_stock = watchlist_symbols[0]
+    st.session_state.selected_stock = fallback_symbols[0]
 
 # ---------- Sidebar ----------
 st.sidebar.title("India Market Dashboard")
@@ -73,6 +74,10 @@ else:
 
 last_refresh = cache_db.get_last_refresh()
 st.sidebar.caption(f"Last data refresh: {last_refresh or 'never'}")
+st.sidebar.caption(
+    "Covers the full Nifty 500. A full refresh takes roughly 8-15 minutes "
+    "- keep this tab open while it runs."
+)
 
 if st.sidebar.button("Refresh data now", width='stretch'):
     if not config.credentials_present():
@@ -95,12 +100,17 @@ st.session_state.nav = st.sidebar.radio(
     index=["Market Overview", "Momentum", "Sector Rotation", "Market Breadth", "Stock Detail", "Chart & Watchlist"].index(st.session_state.nav),
 )
 
+# The stock universe is whatever's actually been fetched into the cache -
+# scales naturally from a 20-stock first run up to the full Nifty 500,
+# rather than being pinned to a fixed list.
 cached = cache_db.list_cached_symbols()
-available = [s for s in watchlist_symbols if s in cached]
+available = sorted([s for s in cached if s not in INDEX_CACHE_NAMES])
 
 if not available:
-    st.info("No data cached yet. Click 'Refresh data now' in the sidebar to get started.")
+    st.info("No data cached yet. Click 'Refresh data now' in the sidebar to get started. The first run covers the full Nifty 500 and takes 8-15 minutes.")
     st.stop()
+
+watchlist_symbols = available
 
 # ================= MARKET OVERVIEW =================
 if st.session_state.nav == "Market Overview":
@@ -130,7 +140,10 @@ if st.session_state.nav == "Market Overview":
         st.dataframe(movers["losers"], width='stretch', hide_index=True)
     with col3:
         st.markdown("**Trending (strong + accelerating)**")
-        st.dataframe(trending[["symbol", "Trending Score"]], width='stretch', hide_index=True)
+        if not trending.empty:
+            st.dataframe(trending[["symbol", "Trending Score"]], width='stretch', hide_index=True)
+        else:
+            st.caption("Not enough history yet to compute trending stocks.")
 
     st.caption(
         "Trending = 70% current momentum level + 30% how much it's improved this week, "
@@ -211,12 +224,9 @@ elif st.session_state.nav == "Sector Rotation":
 # ================= MARKET BREADTH =================
 elif st.session_state.nav == "Market Breadth":
     st.title("Market breadth")
-    st.caption(
-        "Currently scoped to your watchlist. Expand DEFAULT_WATCHLIST in src/refresh_job.py toward the full "
-        "Nifty 500 for breadth numbers that reflect the whole market, not just 20 stocks."
-    )
+    st.caption(f"Based on the {len(available)} Nifty 500 stocks currently cached.")
 
-    row = breadth.breadth_summary_row(available, "My Watchlist")
+    row = breadth.breadth_summary_row(available, "Nifty 500")
     summary_df = pd.DataFrame([row])
     st.dataframe(style_status_column(summary_df), width='stretch', hide_index=True)
 
